@@ -29,42 +29,49 @@ function getDrive() {
   return google.drive({ version: 'v3', auth });
 }
 
+// Flags requeridos para operar en Shared Drives / Team Drives
+const SHARED_DRIVE_PARAMS = {
+  supportsAllDrives:  true,
+  supportsTeamDrives: true,
+};
+
 async function checkRootFolder() {
   const drive = getDrive();
   const res = await drive.files.get({
-    fileId:            process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
-    fields:            'id,name,mimeType,driveId,webViewLink',
-    supportsAllDrives: true,
+    ...SHARED_DRIVE_PARAMS,
+    fileId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    fields: 'id,name,mimeType,driveId,webViewLink',
   });
   return res.data;
 }
 
 async function createCaseFolder(caseId, nombre, empresa) {
   console.log('[Drive] Creando carpeta para:', caseId);
-  const drive = getDrive();
-  const name  = empresa
+  const drive    = getDrive();
+  const rootId   = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+  const name     = empresa
     ? `${caseId} - ${nombre} - ${empresa}`
     : `${caseId} - ${nombre}`;
 
   try {
     const root = await drive.files.get({
-      fileId:            process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
-      fields:            'id,name',
-      supportsAllDrives: true,
+      ...SHARED_DRIVE_PARAMS,
+      fileId: rootId,
+      fields: 'id,name,driveId',
     });
-    console.log('[Drive] Root folder OK:', root.data.name, '/', root.data.id);
+    console.log('[Drive] Root folder OK:', root.data.name, '/ id:', root.data.id, '/ driveId:', root.data.driveId);
   } catch (e) {
     console.warn('[Drive] Root folder check falló (continuando):', e.message);
   }
 
   const res = await drive.files.create({
-    supportsAllDrives: true,
+    ...SHARED_DRIVE_PARAMS,
+    fields:      'id,webViewLink',
     requestBody: {
       name,
       mimeType: FOLDER_MIME,
-      parents:  [process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
+      parents:  [rootId],
     },
-    fields: 'id,webViewLink',
   });
 
   console.log('[Drive] Carpeta creada:', res.data.id, '→', name);
@@ -72,16 +79,18 @@ async function createCaseFolder(caseId, nombre, empresa) {
 }
 
 async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
-  const drive = getDrive();
-
+  const drive  = getDrive();
   const stream = new PassThrough();
   stream.end(buffer);
 
   const res = await drive.files.create({
-    supportsAllDrives: true,
-    requestBody: { name: filename, parents: [folderId] },
-    media:       { mimeType, body: stream },
+    ...SHARED_DRIVE_PARAMS,
     fields:      'id',
+    requestBody: {
+      name:    filename,
+      parents: [folderId],
+    },
+    media: { mimeType, body: stream },
   });
 
   console.log('[Drive] Archivo subido:', filename, `(${Math.round(buffer.length / 1024)} KB)`);
