@@ -41,7 +41,6 @@ const upload = multer({
   { name: 'no_propiedad',            maxCount: 1  },
 ]);
 
-// Prefijos numéricos para ordenar archivos en Drive
 const FIELD_PREFIX = {
   declaracion_responsable: '01',
   facturas:                '02',
@@ -74,8 +73,16 @@ function generateCaseId() {
 }
 
 router.post('/upload', uploadLimit, (req, res, next) => {
+
+  console.log('\n========================================');
+  console.log('[Upload] Nueva petición recibida');
+  console.log('[Upload] Origin:', req.headers.origin || '(sin origin)');
+  console.log('[Upload] Content-Type:', req.headers['content-type'] || '(sin content-type)');
+  console.log('========================================');
+
   upload(req, res, async (multerErr) => {
     if (multerErr) {
+      console.error('[Upload] Error de multer:', multerErr.code, multerErr.message);
       if (multerErr instanceof multer.MulterError) {
         const msg = multerErr.code === 'LIMIT_FILE_SIZE'
           ? 'Un archivo supera el límite de 10 MB.'
@@ -88,32 +95,78 @@ router.post('/upload', uploadLimit, (req, res, next) => {
     }
 
     try {
-      // ── Validar campos ────────────────────────────────────
+      // ── Loguear campos recibidos ──────────────────────────
+      console.log('[Upload] req.body:', {
+        nombre:    req.body.nombre   || '(vacío)',
+        empresa:   req.body.empresa  || '(vacío)',
+        email:     req.body.email    || '(vacío)',
+        telefono:  req.body.telefono || '(vacío)',
+        tipo_caso: req.body.tipo_caso || '(vacío)',
+      });
+
+      const files    = req.files || {};
+      const fileKeys = Object.keys(files);
+      if (fileKeys.length) {
+        console.log('[Upload] Archivos recibidos:');
+        for (const [field, arr] of Object.entries(files)) {
+          arr.forEach(f => console.log(`  ${field}: "${f.originalname}" (${Math.round(f.size/1024)} KB, ${f.mimetype})`));
+        }
+      } else {
+        console.warn('[Upload] req.files está vacío — multer no procesó ningún archivo');
+      }
+
+      // ── Loguear variables de entorno (solo si están presentes) ──
+      console.log('[Upload] ENV check:', {
+        GOOGLE_CLIENT_EMAIL:      !!process.env.GOOGLE_CLIENT_EMAIL,
+        GOOGLE_PRIVATE_KEY:       !!process.env.GOOGLE_PRIVATE_KEY,
+        GOOGLE_DRIVE_ROOT_FOLDER: !!process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+        RESEND_API_KEY:           !!process.env.RESEND_API_KEY,
+        ALLOWED_ORIGINS:          process.env.ALLOWED_ORIGINS || '(no definido)',
+      });
+
+      // ── Validar campos de texto ───────────────────────────
       const nombre   = sanitize(req.body.nombre);
       const empresa  = sanitize(req.body.empresa);
       const email    = sanitize(req.body.email);
       const telefono = sanitize(req.body.telefono);
       const tipoCaso = sanitize(req.body.tipo_caso);
 
-      if (!nombre)                         return res.status(400).json({ success: false, message: 'El nombre es obligatorio.' });
-      if (!email || !isValidEmail(email))  return res.status(400).json({ success: false, message: 'El email no es válido.' });
-      if (!isValidPhone(telefono))         return res.status(400).json({ success: false, message: 'El teléfono no es válido.' });
+      if (!nombre) {
+        console.warn('[Upload] Fallo validación: nombre vacío');
+        return res.status(400).json({ success: false, message: 'El nombre es obligatorio.' });
+      }
+      if (!email || !isValidEmail(email)) {
+        console.warn('[Upload] Fallo validación: email inválido:', email);
+        return res.status(400).json({ success: false, message: 'El email no es válido.' });
+      }
+      if (!isValidPhone(telefono)) {
+        console.warn('[Upload] Fallo validación: teléfono inválido:', telefono);
+        return res.status(400).json({ success: false, message: 'El teléfono no es válido.' });
+      }
 
-      const files    = req.files || {};
       const allFiles = Object.values(files).flat();
       if (!allFiles.length) {
+        console.warn('[Upload] No se recibieron archivos');
         return res.status(400).json({ success: false, message: 'No se ha recibido ningún archivo.' });
       }
 
-      // ── Comprobar configuración de Drive ──────────────────
-      if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID) {
-        return res.status(500).json({ success: false, message: 'Google Drive no está configurado en el servidor. Contacta con el equipo.' });
+      // ── Verificar config de Drive ─────────────────────────
+      const missingVars = [];
+      if (!process.env.GOOGLE_CLIENT_EMAIL)        missingVars.push('GOOGLE_CLIENT_EMAIL');
+      if (!process.env.GOOGLE_PRIVATE_KEY)          missingVars.push('GOOGLE_PRIVATE_KEY');
+      if (!process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID) missingVars.push('GOOGLE_DRIVE_ROOT_FOLDER_ID');
+
+      if (missingVars.length) {
+        const msg = `Variables de entorno faltantes en el servidor: ${missingVars.join(', ')}`;
+        console.error('[Upload]', msg);
+        return res.status(500).json({ success: false, message: msg });
       }
 
       const caseId = generateCaseId();
       const fecha  = new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
 
-      console.log('[Nuevo caso]', { caseId, nombre, empresa, email, telefono, tipoCaso, fecha, archivos: allFiles.map(f => f.originalname) });
+      console.log('[Upload] CaseId generado:', caseId);
+      console.log('[Upload] Datos:', { nombre, empresa, email, telefono, tipoCaso, fecha });
 
       // ── Crear carpeta en Drive (obligatorio) ──────────────
       let driveFolderId, driveFolderUrl;
@@ -121,21 +174,30 @@ router.post('/upload', uploadLimit, (req, res, next) => {
         const folder = await createCaseFolder(caseId, nombre, empresa);
         driveFolderId  = folder.id;
         driveFolderUrl = folder.webViewLink;
+        console.log('[Upload] Carpeta Drive OK:', driveFolderUrl);
       } catch (e) {
-        console.error('[Drive] Error creando carpeta:', e.message);
-        return res.status(500).json({ success: false, message: 'Error al crear carpeta en Google Drive. Inténtalo de nuevo en unos minutos.' });
+        console.error('[Upload] ERROR creando carpeta Drive:');
+        console.error(e.stack || e.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Error al crear la carpeta en Google Drive: ' + e.message,
+        });
       }
 
       // ── Subir archivos a Drive en paralelo ────────────────
-      const driveFiles = []; // [{ filename, ok }]
+      const driveFiles = [];
 
       const uploadTasks = Object.entries(files).flatMap(([fieldName, fileArray]) =>
         fileArray.map((file, index) => {
           const filename = driveFilename(fieldName, index, fileArray.length, file.originalname);
+          console.log(`[Upload] Subiendo a Drive: ${filename} (${Math.round(file.size/1024)} KB)`);
           return uploadFileToDrive(file.buffer, filename, file.mimetype, driveFolderId)
-            .then(() => driveFiles.push({ filename, ok: true }))
+            .then(() => {
+              driveFiles.push({ filename, ok: true });
+            })
             .catch(e => {
-              console.error(`[Drive] Error subiendo ${filename}:`, e.message);
+              console.error(`[Upload] ERROR subiendo ${filename}:`);
+              console.error(e.stack || e.message);
               driveFiles.push({ filename, ok: false });
             });
         })
@@ -143,7 +205,12 @@ router.post('/upload', uploadLimit, (req, res, next) => {
 
       await Promise.all(uploadTasks);
 
+      const subidosOK   = driveFiles.filter(f => f.ok).length;
+      const subidosFail = driveFiles.filter(f => !f.ok).length;
+      console.log(`[Upload] Drive: ${subidosOK} OK, ${subidosFail} errores`);
+
       // ── Responder al usuario ──────────────────────────────
+      console.log('[Upload] Respondiendo 200 →', caseId);
       res.status(200).json({
         success: true,
         caseId,
@@ -181,7 +248,7 @@ router.post('/upload', uploadLimit, (req, res, next) => {
               <tr><td style="padding:8px 12px;border:1px solid #ddd;font-weight:600;background:#f9f9f9">Fecha</td><td style="padding:8px 12px;border:1px solid #ddd">${fecha}</td></tr>
             </table>
 
-            <p style="font-weight:600;margin:0 0 12px;font-size:14px">Archivos recibidos:</p>
+            <p style="font-weight:600;margin:0 0 12px;font-size:14px">Archivos en Drive:</p>
             <ul style="margin:0 0 24px;padding-left:20px">${filesListHtml}</ul>
 
             <div style="text-align:center;margin:24px 0">
@@ -216,17 +283,22 @@ router.post('/upload', uploadLimit, (req, res, next) => {
         to:      emailTo,
         subject: `[ATLAS CAE] Nuevo caso ${caseId} — ${nombre}`,
         html:    internalHtml,
-      }).catch(e => console.error('[Email interno]', e.message));
+      })
+        .then(() => console.log('[Email] Interno enviado a', emailTo))
+        .catch(e => console.error('[Email] ERROR interno:', e.message));
 
       resend.emails.send({
         from:    emailFrom,
         to:      email,
         subject: `Tu documentación ATLAS CAE — Ref. ${caseId}`,
         html:    confirmHtml,
-      }).catch(e => console.error('[Email usuario]', e.message));
+      })
+        .then(() => console.log('[Email] Confirmación enviada a', email))
+        .catch(e => console.error('[Email] ERROR confirmación:', e.message));
 
     } catch (err) {
-      console.error('[Upload]', err);
+      console.error('[Upload] ERROR inesperado:');
+      console.error(err.stack || err.message);
       if (!res.headersSent) next(err);
     }
   });

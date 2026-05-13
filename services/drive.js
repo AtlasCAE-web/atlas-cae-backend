@@ -1,12 +1,23 @@
 'use strict';
-const { google }   = require('googleapis');
-const { Readable } = require('stream');
+const { google }      = require('googleapis');
+const { PassThrough } = require('stream');
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 function getDrive() {
-  const rawKey     = process.env.GOOGLE_PRIVATE_KEY || '';
-  const privateKey = rawKey.includes('\\n') ? rawKey.replace(/\\n/g, '\n') : rawKey;
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+
+  // Render puede almacenar la clave con \n literales o con saltos reales
+  const privateKey = rawKey.includes('\\n')
+    ? rawKey.replace(/\\n/g, '\n')
+    : rawKey;
+
+  if (!privateKey || !privateKey.includes('PRIVATE KEY')) {
+    throw new Error(
+      `GOOGLE_PRIVATE_KEY parece inválida. Longitud: ${rawKey.length} chars. ` +
+      `¿Copiaste el valor completo incluyendo -----BEGIN PRIVATE KEY----- ?`
+    );
+  }
 
   const auth = new google.auth.GoogleAuth({
     credentials: {
@@ -20,8 +31,11 @@ function getDrive() {
 }
 
 async function createCaseFolder(caseId, nombre, empresa) {
+  console.log('[Drive] Creando carpeta para:', caseId);
   const drive = getDrive();
-  const name  = empresa ? `${caseId} - ${nombre} - ${empresa}` : `${caseId} - ${nombre}`;
+  const name  = empresa
+    ? `${caseId} - ${nombre} - ${empresa}`
+    : `${caseId} - ${nombre}`;
 
   const res = await drive.files.create({
     requestBody: {
@@ -32,12 +46,18 @@ async function createCaseFolder(caseId, nombre, empresa) {
     fields: 'id,webViewLink',
   });
 
+  console.log('[Drive] Carpeta creada:', res.data.id, '→', name);
   return res.data; // { id, webViewLink }
 }
 
 async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
-  const drive  = getDrive();
-  const stream = Readable.from(buffer);
+  const drive = getDrive();
+
+  // Usar PassThrough en lugar de Readable.from(buffer):
+  // Readable.from itera un Buffer byte a byte → millones de chunks de 1 byte
+  // PassThrough.end(buffer) entrega el buffer entero en un solo chunk
+  const stream = new PassThrough();
+  stream.end(buffer);
 
   const res = await drive.files.create({
     requestBody: { name: filename, parents: [folderId] },
@@ -45,6 +65,7 @@ async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
     fields:      'id',
   });
 
+  console.log('[Drive] Archivo subido:', filename, `(${Math.round(buffer.length / 1024)} KB)`);
   return res.data;
 }
 
