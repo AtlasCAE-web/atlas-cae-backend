@@ -7,7 +7,6 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 function getDrive() {
   const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
 
-  // Render puede almacenar la clave con \n literales o con saltos reales
   const privateKey = rawKey.includes('\\n')
     ? rawKey.replace(/\\n/g, '\n')
     : rawKey;
@@ -30,6 +29,16 @@ function getDrive() {
   return google.drive({ version: 'v3', auth });
 }
 
+async function checkRootFolder() {
+  const drive = getDrive();
+  const res = await drive.files.get({
+    fileId:            process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    fields:            'id,name,mimeType,driveId,webViewLink',
+    supportsAllDrives: true,
+  });
+  return res.data;
+}
+
 async function createCaseFolder(caseId, nombre, empresa) {
   console.log('[Drive] Creando carpeta para:', caseId);
   const drive = getDrive();
@@ -37,7 +46,19 @@ async function createCaseFolder(caseId, nombre, empresa) {
     ? `${caseId} - ${nombre} - ${empresa}`
     : `${caseId} - ${nombre}`;
 
+  try {
+    const root = await drive.files.get({
+      fileId:            process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+      fields:            'id,name',
+      supportsAllDrives: true,
+    });
+    console.log('[Drive] Root folder OK:', root.data.name, '/', root.data.id);
+  } catch (e) {
+    console.warn('[Drive] Root folder check falló (continuando):', e.message);
+  }
+
   const res = await drive.files.create({
+    supportsAllDrives: true,
     requestBody: {
       name,
       mimeType: FOLDER_MIME,
@@ -47,19 +68,17 @@ async function createCaseFolder(caseId, nombre, empresa) {
   });
 
   console.log('[Drive] Carpeta creada:', res.data.id, '→', name);
-  return res.data; // { id, webViewLink }
+  return res.data;
 }
 
 async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
   const drive = getDrive();
 
-  // Usar PassThrough en lugar de Readable.from(buffer):
-  // Readable.from itera un Buffer byte a byte → millones de chunks de 1 byte
-  // PassThrough.end(buffer) entrega el buffer entero en un solo chunk
   const stream = new PassThrough();
   stream.end(buffer);
 
   const res = await drive.files.create({
+    supportsAllDrives: true,
     requestBody: { name: filename, parents: [folderId] },
     media:       { mimeType, body: stream },
     fields:      'id',
@@ -69,4 +88,4 @@ async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
   return res.data;
 }
 
-module.exports = { createCaseFolder, uploadFileToDrive };
+module.exports = { checkRootFolder, createCaseFolder, uploadFileToDrive };

@@ -6,7 +6,8 @@ const cors      = require('cors');
 const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
 
-const uploadRouter = require('./routes/upload');
+const uploadRouter      = require('./routes/upload');
+const { checkRootFolder } = require('./services/drive');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -59,6 +60,18 @@ app.get('/api/debug-config', (_req, res) => {
   });
 });
 
+// ── Test acceso a carpeta raíz de Drive ───────────────────
+app.get('/api/test-drive-folder', async (_req, res) => {
+  try {
+    const folder = await checkRootFolder();
+    console.log('[test-drive-folder] OK:', folder);
+    res.json({ ok: true, folder });
+  } catch (e) {
+    console.error('[test-drive-folder] ERROR:', e.stack || e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.use('/api', uploadRouter);
 
 app.use((_req, res) => res.status(404).json({ success: false, message: 'Ruta no encontrada.' }));
@@ -75,5 +88,6 @@ app.listen(PORT, () => {
   console.log(`\nATLAS CAE backend · puerto ${PORT} · ${process.env.NODE_ENV || 'development'}`);
   console.log(`Health:       GET /health`);
   console.log(`Debug config: GET /api/debug-config`);
+  console.log(`Test Drive:   GET /api/test-drive-folder`);
   console.log(`Upload:       POST /api/upload\n`);
 });
