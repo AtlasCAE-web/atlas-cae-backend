@@ -4,18 +4,26 @@ const { PassThrough } = require('stream');
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
-function getDrive() {
-  const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+// Flags requeridos para operar en Shared Drives / Team Drives
+const SHARED_DRIVE_PARAMS = {
+  supportsAllDrives:  true,
+  supportsTeamDrives: true,
+};
 
-  const privateKey = rawKey.includes('\\n')
-    ? rawKey.replace(/\\n/g, '\n')
-    : rawKey;
+// Cache del cliente Drive — se inicializa una vez por proceso
+let _drive = null;
+
+function getDrive() {
+  if (_drive) return _drive;
+
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+  const privateKey = rawKey.includes('\\n') ? rawKey.replace(/\\n/g, '\n') : rawKey;
 
   if (!privateKey || !privateKey.includes('PRIVATE KEY')) {
-    throw new Error(
-      `GOOGLE_PRIVATE_KEY parece inválida. Longitud: ${rawKey.length} chars. ` +
-      `¿Copiaste el valor completo incluyendo -----BEGIN PRIVATE KEY----- ?`
-    );
+    throw new Error('GOOGLE_PRIVATE_KEY inválida o ausente.');
+  }
+  if (!process.env.GOOGLE_CLIENT_EMAIL) {
+    throw new Error('GOOGLE_CLIENT_EMAIL ausente.');
   }
 
   const auth = new google.auth.GoogleAuth({
@@ -26,14 +34,18 @@ function getDrive() {
     scopes: ['https://www.googleapis.com/auth/drive'],
   });
 
-  return google.drive({ version: 'v3', auth });
+  _drive = google.drive({ version: 'v3', auth, timeout: 30_000 });
+  return _drive;
 }
 
-// Flags requeridos para operar en Shared Drives / Team Drives
-const SHARED_DRIVE_PARAMS = {
-  supportsAllDrives:  true,
-  supportsTeamDrives: true,
-};
+// Sanea el nombre de carpeta antes de mandarlo a Drive
+function safeFolderName(s, maxLen = 120) {
+  return String(s || '')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .replace(/[\\/]/g, '-')
+    .trim()
+    .slice(0, maxLen);
+}
 
 async function checkRootFolder() {
   const drive = getDrive();
@@ -46,27 +58,17 @@ async function checkRootFolder() {
 }
 
 async function createCaseFolder(caseId, nombre, empresa) {
-  console.log('[Drive] Creando carpeta para:', caseId);
-  const drive    = getDrive();
-  const rootId   = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
-  const name     = empresa
-    ? `${caseId} - ${nombre} - ${empresa}`
-    : `${caseId} - ${nombre}`;
-
-  try {
-    const root = await drive.files.get({
-      ...SHARED_DRIVE_PARAMS,
-      fileId: rootId,
-      fields: 'id,name,driveId',
-    });
-    console.log('[Drive] Root folder OK:', root.data.name, '/ id:', root.data.id, '/ driveId:', root.data.driveId);
-  } catch (e) {
-    console.warn('[Drive] Root folder check falló (continuando):', e.message);
-  }
+  const drive  = getDrive();
+  const rootId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+  const safeNombre  = safeFolderName(nombre, 80);
+  const safeEmpresa = safeFolderName(empresa, 80);
+  const name = safeEmpresa
+    ? `${caseId} - ${safeNombre} - ${safeEmpresa}`
+    : `${caseId} - ${safeNombre}`;
 
   const res = await drive.files.create({
     ...SHARED_DRIVE_PARAMS,
-    fields:      'id,webViewLink',
+    fields: 'id,webViewLink',
     requestBody: {
       name,
       mimeType: FOLDER_MIME,
@@ -74,7 +76,6 @@ async function createCaseFolder(caseId, nombre, empresa) {
     },
   });
 
-  console.log('[Drive] Carpeta creada:', res.data.id, '→', name);
   return res.data;
 }
 
@@ -85,7 +86,7 @@ async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
 
   const res = await drive.files.create({
     ...SHARED_DRIVE_PARAMS,
-    fields:      'id',
+    fields: 'id',
     requestBody: {
       name:    filename,
       parents: [folderId],
@@ -93,7 +94,6 @@ async function uploadFileToDrive(buffer, filename, mimeType, folderId) {
     media: { mimeType, body: stream },
   });
 
-  console.log('[Drive] Archivo subido:', filename, `(${Math.round(buffer.length / 1024)} KB)`);
   return res.data;
 }
 
